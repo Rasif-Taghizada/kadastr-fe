@@ -10,4 +10,5 @@ export interface ToolbarProps {
   onSaveClick: () => void;
   onColorChange: (color: string) => void;
   onUploadClick: () => void;
+  onExportClick: () => void;
 }

@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { openNotification } from '@/common/components/shared/notification';
 
-const gisBaseURL = import.meta.env.VITE_GIS_BASE_URL || 'http://localhost:3001';
+const gisBaseURL = import.meta.env.VITE_BASE_URL || 'http://localhost:3000';
 
 const gisInstance = axios.create({
   baseURL: gisBaseURL,

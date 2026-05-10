@@ -3,7 +3,7 @@ const auth = {
   signOut: 'DeviceSessions/logout-all',
   refreshToken: 'Account/accounts/refresh-sign-in',
   changePassword: 'Account/accounts/change-password',
-  profile: 'Account/accounts/profile',
+  profile: 'v1/users/me',
 };
 
 const user = {
@@ -87,14 +87,19 @@ const qrCode = {
 };
 
 const gisEndpoints = {
+  // Auth
   login: '/v1/auth/login',
   register: '/v1/auth/register',
-  me: '/v1/users/me',
+  logout: '/v1/auth/logout',
+  me: '/v1/auth/me',
+  // GIS features
   features: '/v1/gis/features',
   featuresSave: '/v1/gis/features/save',
   featuresUpload: '/v1/gis/features/upload',
   featureById: (id: string) => `/v1/gis/features/${id}`,
   featuresBatchDelete: '/v1/gis/features/batch',
+  // Users
+  usersMe: '/v1/users/me',
 };
 
 export {

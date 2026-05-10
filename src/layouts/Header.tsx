@@ -8,7 +8,7 @@ import { logout } from '@/common/store/slices/authSlices';
 import { toggleSidebarCollapsed, clearUserRole } from '@/common/store/slices/configSlice';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useLocation } from 'react-router-dom';
-import { logoutService } from '@/common/libs/services/authService';
+import { gisLogoutService } from '@/common/libs/services/gisAuthService';
 import { useDebounce } from '@/common/utils/hooks/useDebounce';
 
 const { Header } = Layout;
@@ -58,7 +58,7 @@ const LayoutContentHeader: React.FC = () => {
 
   const handleLogout = async () => {
     try {
-      await logoutService();
+      await gisLogoutService();
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
@@ -66,6 +66,7 @@ const LayoutContentHeader: React.FC = () => {
       localStorage.removeItem('refresh_token');
       dispatch(logout());
       dispatch(clearUserRole());
+      window.location.href = '/auth/signin';
     }
   };
 

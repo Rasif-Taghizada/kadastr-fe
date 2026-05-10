@@ -178,7 +178,17 @@
     "required": "This field is required",
     "first_name": "First name",
     "last_name": "Last name",
-    "password_min_length": "Password must be at least 6 characters"
+    "password_min_length": "Password must be at least 6 characters",
+    "tool_draw_polygon": "Draw Polygon",
+    "tool_draw_line": "Draw Line",
+    "tool_draw_point": "Draw Point",
+    "export_geojson": "Export GeoJSON",
+    "merge_select_features": "Select features to merge, then click again to confirm",
+    "merge_confirm_selection": "Confirm merge selection",
+    "feature_info": "Feature Info",
+    "feature_name": "Name",
+    "feature_type": "Type",
+    "feature_color": "Color"
   },
   "errors": {
     "something_went_wrong": "Something went wrong",

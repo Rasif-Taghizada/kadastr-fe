@@ -17,4 +17,8 @@ const gisGetMeService = async (): Promise<GisAuthResponse['user']> => {
   return response.data;
 };
 
-export { gisLoginService, gisRegisterService, gisGetMeService };
+const gisLogoutService = async (): Promise<void> => {
+  await gisAxios.post(gisEndpoints.logout);
+};
+
+export { gisLoginService, gisRegisterService, gisGetMeService, gisLogoutService };

@@ -1,6 +1,6 @@
 import type { GisUser } from '@/common/types';
 
-export type ToolType = 'select' | 'merge' | 'cut' | 'edit' | 'selectByLocation';
+export type ToolType = 'select' | 'merge' | 'cut' | 'edit' | 'selectByLocation' | 'drawPolygon' | 'drawLine' | 'drawPoint';
 
 export interface GeoJSONGeometry {
   type: string;
@@ -33,6 +33,7 @@ export interface GisFeatureInfo {
   id: string;
   name: string | null;
   color: string;
+  featureType: string | null;
 }
 
 export interface MapViewRef {
@@ -41,11 +42,15 @@ export interface MapViewRef {
   getSaveData: () => GeoJSONFeature[];
   deleteSelectedFeatures: () => void;
   getSelectedFeaturesInfo: () => GisFeatureInfo[];
+  updateFeatureProperty: (id: string, props: Partial<GeoJSONFeatureProperties>) => void;
+  exportGeoJSON: () => GeoJSONFeature[];
 }
 
 export interface MapViewProps {
   activeTool: ToolType;
   onSelectionChange: (count: number) => void;
+  onCoordinateChange?: (coord: [number, number] | null) => void;
+  onFeatureDrawn?: () => void;
 }
 
 export interface GisAuthState {

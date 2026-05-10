@@ -1,4 +1,4 @@
-import { createBrowserRouter } from 'react-router-dom';
+import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { lazy } from 'react';
 import GisRoute from '@/routers/protectedRoute/gisRoute';
 import ProtectedRoute from '@/routers/protectedRoute';
@@ -33,6 +33,7 @@ export const router = createBrowserRouter([
       </ProtectedRoute>
     ),
     children: [
+      { index: true, element: <Navigate to="/gis" replace /> },
       {
         path: '/dashboard',
         element: <Dashboard />,

@@ -6,7 +6,7 @@ import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
 import OSM from 'ol/source/OSM';
 import GeoJSON from 'ol/format/GeoJSON';
-import { fromLonLat } from 'ol/proj';
+import { fromLonLat, toLonLat } from 'ol/proj';
 import Select from 'ol/interaction/Select';
 import Modify from 'ol/interaction/Modify';
 import Draw from 'ol/interaction/Draw';
@@ -19,15 +19,16 @@ import OLFeature from 'ol/Feature';
 import type { Geometry } from 'ol/geom';
 import { createBox } from 'ol/interaction/Draw';
 import * as turf from '@turf/turf';
-import type { Feature as GJFeature, LineString as GJLineString, Polygon as GJPolygon, MultiPolygon as GJMultiPolygon } from 'geojson';
+import type { Feature as GJFeature, LineString as GJLineString, Polygon as GJPolygon, MultiPolygon as GJMultiPolygon, MultiLineString as GJMultiLineString } from 'geojson';
 import { v4 as uuidv4 } from 'uuid';
 import 'ol/ol.css';
 
 import { getFeaturesService } from '@/common/libs/services/gisFeaturesService';
 import { openNotification } from '@/common/components/shared/notification';
-import type { MapViewProps, MapViewRef, GisFeatureInfo, GeoJSONFeature } from '@/modules/gis/types';
+import type { MapViewProps, MapViewRef, GisFeatureInfo, GeoJSONFeature, GeoJSONFeatureProperties } from '@/modules/gis/types';
 
-const BAKU_CENTER = fromLonLat([49.8671, 40.4093]);
+// Şağan / Buzovna, Xəzər district, Baku
+const BAKU_CENTER = fromLonLat([50.1108, 40.4834]);
 const DEFAULT_COLOR = '#3388ff';
 
 const makeFeatureStyle = (color: string, isSelected: boolean): Style => {
@@ -53,6 +54,16 @@ const makeFeatureStyle = (color: string, isSelected: boolean): Style => {
   });
 };
 
+const drawStyle = new Style({
+  fill: new Fill({ color: 'rgba(51, 136, 255, 0.15)' }),
+  stroke: new Stroke({ color: '#3388ff', width: 2, lineDash: [6, 3] }),
+  image: new CircleStyle({
+    radius: 5,
+    fill: new Fill({ color: '#3388ff' }),
+    stroke: new Stroke({ color: '#fff', width: 1 }),
+  }),
+});
+
 const cutLineStyle = new Style({
   stroke: new Stroke({ color: '#ff0000', width: 2, lineDash: [8, 4] }),
 });
@@ -64,7 +75,7 @@ const selectByLocationStyle = new Style({
 
 export type { MapViewRef };
 
-const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionChange }, ref) => {
+const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionChange, onCoordinateChange, onFeatureDrawn }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
   const vectorSourceRef = useRef<VectorSource<OLFeature<Geometry>> | null>(null);
@@ -76,6 +87,7 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
   const modifyRef = useRef<Modify | null>(null);
   const drawCutRef = useRef<Draw | null>(null);
   const drawSelectByLocationRef = useRef<Draw | null>(null);
+  const drawNewRef = useRef<Draw | null>(null);
   const tempSourceRef = useRef<VectorSource<OLFeature<Geometry>> | null>(null);
 
   const activeToolRef = useRef(activeTool);
@@ -122,10 +134,21 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       ],
       view: new View({
         center: BAKU_CENTER,
-        zoom: 11,
+        zoom: 14,
       }),
     });
     mapRef.current = map;
+
+    // ─── Coordinate tracking ──────────────────────────────────────────────────
+    if (onCoordinateChange) {
+      map.on('pointermove', (e) => {
+        const lonLat = toLonLat(e.coordinate);
+        onCoordinateChange([lonLat[0], lonLat[1]]);
+      });
+      const container = containerRef.current;
+      const handleLeave = () => onCoordinateChange(null);
+      container?.addEventListener('mouseleave', handleLeave);
+    }
 
     // ─── Single Select ────────────────────────────────────────────────────────
     const singleSelect = new Select({
@@ -197,9 +220,11 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       modifyRef.current,
       drawCutRef.current,
       drawSelectByLocationRef.current,
+      drawNewRef.current,
     ].forEach((interaction) => {
       if (interaction) map.removeInteraction(interaction);
     });
+    drawNewRef.current = null;
 
     singleSelectRef.current?.getFeatures().clear();
     multiSelectRef.current?.getFeatures().clear();
@@ -222,8 +247,43 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       case 'selectByLocation':
         setupSelectByLocationDraw(map);
         break;
+      case 'drawPolygon':
+        setupDrawNew(map, 'Polygon');
+        break;
+      case 'drawLine':
+        setupDrawNew(map, 'LineString');
+        break;
+      case 'drawPoint':
+        setupDrawNew(map, 'Point');
+        break;
     }
   }, [activeTool]);
+
+  const setupDrawNew = (map: Map, type: 'Polygon' | 'LineString' | 'Point') => {
+    const vectorSource = vectorSourceRef.current;
+    if (!vectorSource) return;
+
+    const draw = new Draw({
+      source: vectorSource,
+      type,
+      style: drawStyle,
+    });
+
+    draw.on('drawend', (e) => {
+      const feature = e.feature as OLFeature<Geometry>;
+      const newId = uuidv4();
+      feature.setId(newId);
+      feature.set('id', newId);
+      feature.set('color', DEFAULT_COLOR);
+      feature.set('name', null);
+      feature.set('featureType', null);
+
+      onFeatureDrawn?.();
+    });
+
+    drawNewRef.current = draw;
+    map.addInteraction(draw);
+  };
 
   const setupSelectByLocationDraw = (map: Map) => {
     const tempSource = tempSourceRef.current;
@@ -275,7 +335,6 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
         });
       }
 
-      // Re-setup for next use
       setupSelectByLocationDraw(map);
     });
 
@@ -434,11 +493,40 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       const targetFeature = vectorSource.getFeatureById(targetFeatureId);
 
       try {
-        let merged = geoJSONFeatures[0] as unknown as GJFeature<GJPolygon | GJMultiPolygon>;
-        for (let i = 1; i < geoJSONFeatures.length; i++) {
-          const next = geoJSONFeatures[i] as unknown as GJFeature<GJPolygon | GJMultiPolygon>;
-          const result = turf.union(turf.featureCollection([merged, next]));
-          if (result) merged = result as GJFeature<GJPolygon | GJMultiPolygon>;
+        const firstGeomType = geoJSONFeatures[0]?.geometry?.type;
+        const isLineGeometry = firstGeomType === 'LineString' || firstGeomType === 'MultiLineString';
+
+        let mergedGeoJSON: GJFeature;
+
+        if (isLineGeometry) {
+          const lineFeatures = geoJSONFeatures as GJFeature<GJLineString | GJMultiLineString>[];
+          const collection = turf.featureCollection(lineFeatures);
+          const combined = turf.combine(collection);
+          const multiLine = combined.features[0] as GJFeature<GJMultiLineString>;
+          const allCoords = multiLine.geometry.coordinates;
+          const joined: number[][][] = [allCoords[0]];
+          for (let i = 1; i < allCoords.length; i++) {
+            const prev = joined[joined.length - 1];
+            const cur = allCoords[i];
+            const prevEnd = prev[prev.length - 1];
+            const curStart = cur[0];
+            if (prevEnd[0] === curStart[0] && prevEnd[1] === curStart[1]) {
+              joined[joined.length - 1] = [...prev, ...cur.slice(1)];
+            } else {
+              joined.push(cur);
+            }
+          }
+          mergedGeoJSON = joined.length === 1
+            ? (turf.lineString(joined[0]) as GJFeature<GJLineString>)
+            : (turf.multiLineString(joined) as GJFeature<GJMultiLineString>);
+        } else {
+          let merged = geoJSONFeatures[0] as unknown as GJFeature<GJPolygon | GJMultiPolygon>;
+          for (let i = 1; i < geoJSONFeatures.length; i++) {
+            const next = geoJSONFeatures[i] as unknown as GJFeature<GJPolygon | GJMultiPolygon>;
+            const result = turf.union(turf.featureCollection([merged, next]));
+            if (result) merged = result as GJFeature<GJPolygon | GJMultiPolygon>;
+          }
+          mergedGeoJSON = merged;
         }
 
         features.forEach((f) => vectorSource.removeFeature(f));
@@ -447,7 +535,7 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
         const targetProps = targetFeature?.getProperties() || {};
         const rawMergedFeature = format.readFeature(
           {
-            ...merged,
+            ...mergedGeoJSON,
             properties: { ...targetProps, id: newId },
           },
           { featureProjection: 'EPSG:3857', dataProjection: 'EPSG:4326' }
@@ -502,6 +590,30 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
           dataProjection: 'EPSG:4326',
         });
         return {
+          type: 'Feature' as const,
+          id: f.getId() as string,
+          geometry: geoJSON.geometry as GeoJSONFeature['geometry'],
+          properties: {
+            id: f.getId() as string,
+            name: f.get('name') ?? null,
+            color: f.get('color') || DEFAULT_COLOR,
+            featureType: f.get('featureType') ?? null,
+          },
+        };
+      });
+    },
+
+    exportGeoJSON: (): GeoJSONFeature[] => {
+      const vectorSource = vectorSourceRef.current;
+      if (!vectorSource) return [];
+
+      const format = new GeoJSON();
+      return vectorSource.getFeatures().map((f) => {
+        const geoJSON = format.writeFeatureObject(f, {
+          featureProjection: 'EPSG:3857',
+          dataProjection: 'EPSG:4326',
+        });
+        return {
           ...geoJSON,
           type: 'Feature' as const,
           id: f.getId() as string,
@@ -510,6 +622,8 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
             ...geoJSON.properties,
             id: f.getId() as string,
             color: f.get('color') || DEFAULT_COLOR,
+            name: f.get('name') || null,
+            featureType: f.get('featureType') || null,
           },
         };
       });
@@ -548,9 +662,24 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
             id: f.getId() as string,
             name: f.get('name') || null,
             color: f.get('color') || DEFAULT_COLOR,
+            featureType: f.get('featureType') || null,
           };
         })
         .filter(Boolean) as GisFeatureInfo[];
+    },
+
+    updateFeatureProperty: (id: string, props: Partial<GeoJSONFeatureProperties>) => {
+      const vectorSource = vectorSourceRef.current;
+      if (!vectorSource) return;
+
+      const feature = vectorSource.getFeatureById(id);
+      if (!feature) return;
+
+      Object.entries(props).forEach(([key, value]) => {
+        feature.set(key, value);
+      });
+
+      refreshStyles();
     },
   }));
 

@@ -178,7 +178,17 @@
     "required": "Это поле обязательно",
     "first_name": "Имя",
     "last_name": "Фамилия",
-    "password_min_length": "Пароль должен содержать не менее 6 символов"
+    "password_min_length": "Пароль должен содержать не менее 6 символов",
+    "tool_draw_polygon": "Нарисовать полигон",
+    "tool_draw_line": "Нарисовать линию",
+    "tool_draw_point": "Нарисовать точку",
+    "export_geojson": "Экспорт GeoJSON",
+    "merge_select_features": "Выберите объекты для объединения, затем нажмите снова",
+    "merge_confirm_selection": "Подтвердить объединение",
+    "feature_info": "Информация об объекте",
+    "feature_name": "Название",
+    "feature_type": "Тип",
+    "feature_color": "Цвет"
   },
   "errors": {
     "something_went_wrong": "Что-то пошло не так",

@@ -178,7 +178,17 @@
     "required": "Bu sahə tələb olunur",
     "first_name": "Ad",
     "last_name": "Soyad",
-    "password_min_length": "Şifrə ən azı 6 simvol olmalıdır"
+    "password_min_length": "Şifrə ən azı 6 simvol olmalıdır",
+    "tool_draw_polygon": "Polygon çək",
+    "tool_draw_line": "Xətt çək",
+    "tool_draw_point": "Nöqtə çək",
+    "export_geojson": "GeoJSON ixrac et",
+    "merge_select_features": "Birləşdirmək üçün feature-ları seçin, sonra yenidən klikləyin",
+    "merge_confirm_selection": "Seçimi birləşdir",
+    "feature_info": "Feature məlumatı",
+    "feature_name": "Ad",
+    "feature_type": "Tip",
+    "feature_color": "Rəng"
   },
   "errors": {
     "something_went_wrong": "Nəsə səhv getdi",

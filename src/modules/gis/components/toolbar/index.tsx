@@ -10,6 +10,10 @@ import {
   SaveOutlined,
   UploadOutlined,
   BgColorsOutlined,
+  DownloadOutlined,
+  BorderOutlined,
+  LineChartOutlined,
+  EnvironmentOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { ToolbarProps } from './type';
@@ -25,21 +29,28 @@ const Toolbar: React.FC<ToolbarProps> = ({
   onSaveClick,
   onColorChange,
   onUploadClick,
+  onExportClick,
 }) => {
   const { t } = useTranslation();
 
-  const toolButtons: { key: ToolType; icon: React.ReactNode; label: string }[] = [
+  const selectTools: { key: ToolType; icon: React.ReactNode; label: string }[] = [
     { key: 'select', icon: <SelectOutlined />, label: t('gis.tool_select') },
     { key: 'edit', icon: <EditOutlined />, label: t('gis.tool_edit_vertex') },
     { key: 'cut', icon: <ScissorOutlined />, label: t('gis.tool_cut') },
     { key: 'selectByLocation', icon: <AimOutlined />, label: t('gis.tool_select_by_location') },
   ];
 
+  const drawTools: { key: ToolType; icon: React.ReactNode; label: string }[] = [
+    { key: 'drawPolygon', icon: <BorderOutlined />, label: t('gis.tool_draw_polygon') },
+    { key: 'drawLine', icon: <LineChartOutlined />, label: t('gis.tool_draw_line') },
+    { key: 'drawPoint', icon: <EnvironmentOutlined />, label: t('gis.tool_draw_point') },
+  ];
+
   return (
     <div
       style={{
         position: 'absolute',
-        top: 12,
+        top: 60,
         left: 12,
         zIndex: 1000,
         background: '#fff',
@@ -52,7 +63,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
         minWidth: 44,
       }}
     >
-      {toolButtons.map(({ key, icon, label }) => (
+      {selectTools.map(({ key, icon, label }) => (
         <Tooltip key={key} title={label} placement="right">
           <Button
             type={activeTool === key ? 'primary' : 'default'}
@@ -65,7 +76,23 @@ const Toolbar: React.FC<ToolbarProps> = ({
 
       <Divider style={{ margin: '4px 0' }} />
 
-      <Tooltip title={t('gis.tool_merge')} placement="right">
+      {drawTools.map(({ key, icon, label }) => (
+        <Tooltip key={key} title={label} placement="right">
+          <Button
+            type={activeTool === key ? 'primary' : 'default'}
+            icon={icon}
+            onClick={() => onToolChange(key)}
+            style={{ width: 36, height: 36, padding: 0 }}
+          />
+        </Tooltip>
+      ))}
+
+      <Divider style={{ margin: '4px 0' }} />
+
+      <Tooltip
+        title={activeTool === 'merge' ? t('gis.merge_confirm_selection') : t('gis.tool_merge')}
+        placement="right"
+      >
         <Button
           type={activeTool === 'merge' ? 'primary' : 'default'}
           icon={<MergeCellsOutlined />}
@@ -108,6 +135,14 @@ const Toolbar: React.FC<ToolbarProps> = ({
         <Button
           icon={<UploadOutlined />}
           onClick={onUploadClick}
+          style={{ width: 36, height: 36, padding: 0 }}
+        />
+      </Tooltip>
+
+      <Tooltip title={t('gis.export_geojson')} placement="right">
+        <Button
+          icon={<DownloadOutlined />}
+          onClick={onExportClick}
           style={{ width: 36, height: 36, padding: 0 }}
         />
       </Tooltip>
