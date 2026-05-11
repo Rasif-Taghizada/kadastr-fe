@@ -84,6 +84,10 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
   const vectorSourceRef = useRef<VectorSource<OLFeature<Geometry>> | null>(null);
   const vectorLayerRef = useRef<VectorLayer<VectorSource<OLFeature<Geometry>>> | null>(null);
   const selectedIdsRef = useRef<Set<string>>(new Set());
+  // IDs of features that were removed by cut/merge and must be deleted from the
+  // backend on the next save (drawing new pieces with fresh uuids is not enough —
+  // the original rows would otherwise linger and reappear after a reload).
+  const removedIdsRef = useRef<Set<string>>(new Set());
 
   const singleSelectRef = useRef<Select | null>(null);
   const multiSelectRef = useRef<Select | null>(null);
@@ -345,6 +349,8 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
         const parentName = feature.get('name') ?? null;
         const parentFeatureType = feature.get('featureType') ?? null;
 
+        const parentId = (feature.getId() as string) || (feature.get('id') as string);
+        if (parentId) removedIdsRef.current.add(parentId);
         vectorSource.removeFeature(feature);
 
         [part1, part2].forEach((part) => {
@@ -502,19 +508,31 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
           mergedGeoJSON = merged;
         }
 
-        features.forEach((f) => vectorSource.removeFeature(f));
+        const targetColor = targetFeature?.get('color') || DEFAULT_COLOR;
+        const targetName = targetFeature?.get('name') ?? null;
+        const targetFeatureType = targetFeature?.get('featureType') ?? null;
+
+        features.forEach((f) => {
+          const rid = (f.getId() as string) || (f.get('id') as string);
+          if (rid) removedIdsRef.current.add(rid);
+          vectorSource.removeFeature(f);
+        });
 
         const newId = uuidv4();
-        const targetProps = targetFeature?.getProperties() || {};
+        // Pass only the geometry to readFeature — never the source feature's
+        // OL properties. `getProperties()` includes a `geometry` key, and
+        // GeoJSON.readFeature applies properties AFTER setGeometry, so it would
+        // silently overwrite the merged geometry with the target's geometry.
         const rawMergedFeature = format.readFeature(
-          {
-            ...mergedGeoJSON,
-            properties: { ...targetProps, id: newId },
-          },
+          { type: 'Feature', geometry: mergedGeoJSON.geometry, properties: {} },
           { featureProjection: 'EPSG:3857', dataProjection: 'EPSG:4326' }
         );
         const mergedFeature = (Array.isArray(rawMergedFeature) ? rawMergedFeature[0] : rawMergedFeature) as OLFeature<Geometry>;
         mergedFeature.setId(newId);
+        mergedFeature.set('id', newId);
+        mergedFeature.set('color', targetColor);
+        mergedFeature.set('name', targetName);
+        mergedFeature.set('featureType', targetFeatureType);
         vectorSource.addFeature(mergedFeature);
 
         singleSelectRef.current?.getFeatures().clear();
@@ -576,6 +594,12 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
           },
         };
       });
+    },
+
+    getPendingDeletions: (): string[] => Array.from(removedIdsRef.current),
+
+    clearPendingDeletions: () => {
+      removedIdsRef.current.clear();
     },
 
     exportGeoJSON: (): GeoJSONFeature[] => {

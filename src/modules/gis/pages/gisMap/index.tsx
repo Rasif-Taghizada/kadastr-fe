@@ -137,8 +137,9 @@ const GisMap: React.FC = () => {
 
   const handleSaveClick = async () => {
     const features = mapViewRef.current?.getSaveData() ?? [];
+    const deletedIds = mapViewRef.current?.getPendingDeletions() ?? [];
 
-    if (features.length === 0) {
+    if (features.length === 0 && deletedIds.length === 0) {
       openNotification({
         type: 'warning',
         title: t('gis.save'),
@@ -149,7 +150,9 @@ const GisMap: React.FC = () => {
 
     setIsSaving(true);
     try {
-      await saveFeaturesService(features);
+      if (features.length > 0) await saveFeaturesService(features);
+      if (deletedIds.length > 0) await deleteFeaturesService(deletedIds);
+      mapViewRef.current?.clearPendingDeletions();
       openNotification({
         type: 'success',
         title: t('gis.save'),

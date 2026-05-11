@@ -5,7 +5,7 @@ import type { ColumnsType } from 'antd/es/table';
 import TableLists from '@/common/components/shared/table';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import type { ApiUser, UserActivity, UserDetailData, UserDocumentShare } from '@/modules/users/types';
+import type { ApiUser, UserDetailData, UserDocumentShare } from '@/modules/users/types';
 import { UsersPageHeader } from '@/modules/users/components/userNav';
 import TableFilter from '@/common/components/shared/tableFilter';
 import { getUserByIdService, getUsersService } from '@/common/libs/services/userService';
@@ -13,7 +13,6 @@ import { useDebounce } from '@/common/utils/hooks/useDebounce';
 import UserInfo from '@/modules/users/components/userInfo';
 import { openNotification } from '@/common/components/shared/notification';
 import { getDocumentAccessService } from '@/common/libs/services/documentAccessService';
-import { getAuditsService } from '@/common/libs/services/auditService';
 import { getTenantsByIdService } from '@/common/libs/services/tenantService';
 
 const { Text } = Typography;
@@ -33,7 +32,6 @@ const UserLists: React.FC = () => {
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [selectedUser, setSelectedUser] = useState<UserDetailData | null>(null);
   const [userDocumentShare, setUserDocumentShare] = useState<UserDocumentShare[]>([]);
-  const [userActivity, setUserActivity] = useState<UserActivity[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [tenantName, setTenantName] = useState<string>('');
@@ -124,29 +122,10 @@ const UserLists: React.FC = () => {
     }
   };
 
-  const fetchUserActivity = async () => {
-    setIsLoading(true);
-    try {
-      const params = { userId: selectedUserId };
-      const { items } = await getAuditsService(params);
-      setUserActivity(items);
-    } catch (error) {
-      console.error('Error fetching organization users:', error);
-      openNotification({
-        type: 'error',
-        title: t('users.error'),
-        content: t('users.failed_to_load_users'),
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   useEffect(() => {
     if (selectedUserId) {
       fetchOrganizationUsers();
       fetchUserDocumentShare();
-      fetchUserActivity();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedUserId]);
@@ -310,7 +289,7 @@ const UserLists: React.FC = () => {
         </div>
       </Col>
 
-      {selectedUser && <UserInfo user={selectedUser} userDocumentShare={userDocumentShare} userActivity={userActivity} />}
+      {selectedUser && <UserInfo user={selectedUser} userDocumentShare={userDocumentShare} userActivity={[]} />}
     </Row>
   );
 };

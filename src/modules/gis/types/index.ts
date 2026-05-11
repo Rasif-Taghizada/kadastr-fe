@@ -42,6 +42,8 @@ export interface MapViewRef {
   confirmMerge: (targetFeatureId: string) => void;
   setSelectedFeaturesColor: (color: string) => void;
   getSaveData: () => GeoJSONFeature[];
+  getPendingDeletions: () => string[];
+  clearPendingDeletions: () => void;
   deleteSelectedFeatures: () => void;
   getSelectedFeaturesInfo: () => GisFeatureInfo[];
   updateFeatureProperty: (id: string, props: Partial<GeoJSONFeatureProperties>) => void;
