@@ -1,6 +1,8 @@
 import type { GisUser } from '@/common/types';
 
-export type ToolType = 'select' | 'merge' | 'cut' | 'edit' | 'selectByLocation' | 'drawPolygon' | 'drawLine' | 'drawPoint';
+export type ToolType = 'select' | 'merge' | 'cut' | 'edit' | 'drawPolygon' | 'drawLine' | 'drawPoint';
+
+export type SpatialRelationship = 'intersects' | 'within' | 'contains' | 'disjoint' | 'touches';
 
 export interface GeoJSONGeometry {
   type: string;
@@ -44,6 +46,7 @@ export interface MapViewRef {
   getSelectedFeaturesInfo: () => GisFeatureInfo[];
   updateFeatureProperty: (id: string, props: Partial<GeoJSONFeatureProperties>) => void;
   exportGeoJSON: () => GeoJSONFeature[];
+  applySelectByLocation: (relationship: SpatialRelationship, distanceMeters: number) => number;
 }
 
 export interface MapViewProps {

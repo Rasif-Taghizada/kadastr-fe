@@ -25,6 +25,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
   isSaving,
   onToolChange,
   onMergeClick,
+  onSelectByLocationClick,
   onDeleteClick,
   onSaveClick,
   onColorChange,
@@ -37,7 +38,6 @@ const Toolbar: React.FC<ToolbarProps> = ({
     { key: 'select', icon: <SelectOutlined />, label: t('gis.tool_select') },
     { key: 'edit', icon: <EditOutlined />, label: t('gis.tool_edit_vertex') },
     { key: 'cut', icon: <ScissorOutlined />, label: t('gis.tool_cut') },
-    { key: 'selectByLocation', icon: <AimOutlined />, label: t('gis.tool_select_by_location') },
   ];
 
   const drawTools: { key: ToolType; icon: React.ReactNode; label: string }[] = [
@@ -97,6 +97,15 @@ const Toolbar: React.FC<ToolbarProps> = ({
           type={activeTool === 'merge' ? 'primary' : 'default'}
           icon={<MergeCellsOutlined />}
           onClick={onMergeClick}
+          style={{ width: 36, height: 36, padding: 0 }}
+        />
+      </Tooltip>
+
+      <Tooltip title={t('gis.tool_select_by_location')} placement="right">
+        <Button
+          icon={<AimOutlined />}
+          onClick={onSelectByLocationClick}
+          disabled={selectedCount === 0}
           style={{ width: 36, height: 36, padding: 0 }}
         />
       </Tooltip>

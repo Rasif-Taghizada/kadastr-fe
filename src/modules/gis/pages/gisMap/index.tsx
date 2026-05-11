@@ -1,14 +1,16 @@
 import React, { useRef, useState, useCallback } from 'react';
 import { Typography, Spin, Upload } from 'antd';
 import { useTranslation } from 'react-i18next';
+import shp from 'shpjs';
 import MapView from '@/modules/gis/components/mapView';
 import Toolbar from '@/modules/gis/components/toolbar';
 import MergeModal from '@/modules/gis/components/mergeModal';
+import SelectByLocationModal from '@/modules/gis/components/selectByLocationModal';
 import FeatureInfoPanel from '@/modules/gis/components/featureInfoPanel';
 import GisHeader from '@/modules/gis/components/gisHeader';
-import { saveFeaturesService, uploadFeaturesService } from '@/common/libs/services/gisFeaturesService';
+import { saveFeaturesService, uploadFeaturesService, deleteFeaturesService } from '@/common/libs/services/gisFeaturesService';
 import { openNotification } from '@/common/components/shared/notification';
-import type { ToolType, GisFeatureInfo, MapViewRef } from '@/modules/gis/types';
+import type { ToolType, GisFeatureInfo, MapViewRef, SpatialRelationship, GeoJSONFeature } from '@/modules/gis/types';
 
 const { Text } = Typography;
 
@@ -21,6 +23,8 @@ const GisMap: React.FC = () => {
   const [selectedFeature, setSelectedFeature] = useState<GisFeatureInfo | null>(null);
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
   const [mergeFeatures, setMergeFeatures] = useState<GisFeatureInfo[]>([]);
+  const [selectByLocationModalOpen, setSelectByLocationModalOpen] = useState(false);
+  const [selectByLocationSourceCount, setSelectByLocationSourceCount] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [coordinates, setCoordinates] = useState<[number, number] | null>(null);
 
@@ -85,6 +89,29 @@ const GisMap: React.FC = () => {
     setMergeFeatures([]);
   };
 
+  const handleSelectByLocationClick = () => {
+    if (selectedCount === 0) {
+      openNotification({
+        type: 'warning',
+        title: t('gis.tool_select_by_location'),
+        content: t('gis.select_by_location_no_source'),
+      });
+      return;
+    }
+    setSelectByLocationSourceCount(selectedCount);
+    setSelectByLocationModalOpen(true);
+  };
+
+  const handleSelectByLocationApply = (relationship: SpatialRelationship, distance: number) => {
+    const count = mapViewRef.current?.applySelectByLocation(relationship, distance) ?? 0;
+    setSelectByLocationModalOpen(false);
+    openNotification({
+      type: count > 0 ? 'success' : 'info',
+      title: t('gis.tool_select_by_location'),
+      content: `${count} ${t('gis.feature_matched')}`,
+    });
+  };
+
   const handleColorChange = (color: string) => {
     mapViewRef.current?.setSelectedFeaturesColor(color);
     if (selectedFeature) {
@@ -92,11 +119,20 @@ const GisMap: React.FC = () => {
     }
   };
 
-  const handleDeleteClick = () => {
+  const handleDeleteClick = async () => {
     if (selectedCount === 0) return;
+    const ids = (mapViewRef.current?.getSelectedFeaturesInfo() ?? []).map((f) => f.id);
     mapViewRef.current?.deleteSelectedFeatures();
     setSelectedCount(0);
     setSelectedFeature(null);
+
+    if (ids.length > 0) {
+      try {
+        await deleteFeaturesService(ids);
+      } catch (err) {
+        console.error('Delete error:', err);
+      }
+    }
   };
 
   const handleSaveClick = async () => {
@@ -156,8 +192,24 @@ const GisMap: React.FC = () => {
 
   const handleFileUpload = async (file: File) => {
     try {
-      const text = await file.text();
-      const geoJSON = JSON.parse(text);
+      const fileName = file.name.toLowerCase();
+      let geoJSON: { type?: string; features?: GeoJSONFeature[] };
+
+      if (fileName.endsWith('.zip') || fileName.endsWith('.shp')) {
+        const arrayBuffer = await file.arrayBuffer();
+        const parsed = await shp(arrayBuffer);
+        if (Array.isArray(parsed)) {
+          geoJSON = {
+            type: 'FeatureCollection',
+            features: parsed.flatMap((fc) => fc.features) as unknown as GeoJSONFeature[],
+          };
+        } else {
+          geoJSON = parsed as unknown as { type?: string; features?: GeoJSONFeature[] };
+        }
+      } else {
+        const text = await file.text();
+        geoJSON = JSON.parse(text);
+      }
 
       if (geoJSON.type !== 'FeatureCollection' || !Array.isArray(geoJSON.features)) {
         openNotification({
@@ -165,7 +217,7 @@ const GisMap: React.FC = () => {
           title: t('gis.import_geojson'),
           content: t('gis.invalid_geojson'),
         });
-        return;
+        return false;
       }
 
       await uploadFeaturesService(geoJSON.features);
@@ -178,10 +230,11 @@ const GisMap: React.FC = () => {
       window.location.reload();
     } catch (err) {
       console.error('Upload error:', err);
+      const isShp = file.name.toLowerCase().endsWith('.shp');
       openNotification({
         type: 'error',
         title: t('gis.import_geojson'),
-        content: t('gis.import_error'),
+        content: isShp ? t('gis.import_shp_hint') : t('gis.import_error'),
       });
     }
 
@@ -200,7 +253,6 @@ const GisMap: React.FC = () => {
     merge: t('gis.tool_merge'),
     cut: t('gis.tool_cut'),
     edit: t('gis.tool_edit_vertex'),
-    selectByLocation: t('gis.tool_select_by_location'),
     drawPolygon: t('gis.tool_draw_polygon'),
     drawLine: t('gis.tool_draw_line'),
     drawPoint: t('gis.tool_draw_point'),
@@ -229,6 +281,7 @@ const GisMap: React.FC = () => {
         isSaving={isSaving}
         onToolChange={handleToolChange}
         onMergeClick={handleMergeClick}
+        onSelectByLocationClick={handleSelectByLocationClick}
         onDeleteClick={handleDeleteClick}
         onSaveClick={handleSaveClick}
         onColorChange={handleColorChange}
@@ -274,7 +327,7 @@ const GisMap: React.FC = () => {
       </div>
 
       <Upload
-        accept=".geojson,.json"
+        accept=".geojson,.json,.zip,.shp"
         showUploadList={false}
         beforeUpload={(file) => {
           handleFileUpload(file);
@@ -289,6 +342,13 @@ const GisMap: React.FC = () => {
         features={mergeFeatures}
         onConfirm={handleMergeConfirm}
         onCancel={handleMergeCancel}
+      />
+
+      <SelectByLocationModal
+        open={selectByLocationModalOpen}
+        sourceCount={selectByLocationSourceCount}
+        onApply={handleSelectByLocationApply}
+        onCancel={() => setSelectByLocationModalOpen(false)}
       />
     </div>
   );

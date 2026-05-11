@@ -17,7 +17,6 @@ import Stroke from 'ol/style/Stroke';
 import CircleStyle from 'ol/style/Circle';
 import OLFeature from 'ol/Feature';
 import type { Geometry } from 'ol/geom';
-import { createBox } from 'ol/interaction/Draw';
 import * as turf from '@turf/turf';
 import type { Feature as GJFeature, LineString as GJLineString, Polygon as GJPolygon, MultiPolygon as GJMultiPolygon, MultiLineString as GJMultiLineString } from 'geojson';
 import { v4 as uuidv4 } from 'uuid';
@@ -25,16 +24,25 @@ import 'ol/ol.css';
 
 import { getFeaturesService } from '@/common/libs/services/gisFeaturesService';
 import { openNotification } from '@/common/components/shared/notification';
-import type { MapViewProps, MapViewRef, GisFeatureInfo, GeoJSONFeature, GeoJSONFeatureProperties } from '@/modules/gis/types';
+import type { MapViewProps, MapViewRef, GisFeatureInfo, GeoJSONFeature, GeoJSONFeatureProperties, SpatialRelationship } from '@/modules/gis/types';
 
 // Şağan / Buzovna, Xəzər district, Baku
 const BAKU_CENTER = fromLonLat([50.1108, 40.4834]);
 const DEFAULT_COLOR = '#3388ff';
 
+const hexToRgba = (hex: string, alpha: number): string => {
+  const m = hex.replace('#', '');
+  const full = m.length === 3 ? m.split('').map((c) => c + c).join('') : m;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
+
 const makeFeatureStyle = (color: string, isSelected: boolean): Style => {
   if (isSelected) {
     return new Style({
-      fill: new Fill({ color: 'rgba(255, 102, 0, 0.25)' }),
+      fill: new Fill({ color: hexToRgba(color, 0.75) }),
       stroke: new Stroke({ color: '#ff6600', width: 3 }),
       image: new CircleStyle({
         radius: 6,
@@ -44,7 +52,7 @@ const makeFeatureStyle = (color: string, isSelected: boolean): Style => {
     });
   }
   return new Style({
-    fill: new Fill({ color: `${color}40` }),
+    fill: new Fill({ color: hexToRgba(color, 0.6) }),
     stroke: new Stroke({ color, width: 2 }),
     image: new CircleStyle({
       radius: 5,
@@ -68,11 +76,6 @@ const cutLineStyle = new Style({
   stroke: new Stroke({ color: '#ff0000', width: 2, lineDash: [8, 4] }),
 });
 
-const selectByLocationStyle = new Style({
-  fill: new Fill({ color: 'rgba(0, 102, 255, 0.1)' }),
-  stroke: new Stroke({ color: '#0066ff', width: 2, lineDash: [6, 3] }),
-});
-
 export type { MapViewRef };
 
 const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionChange, onCoordinateChange, onFeatureDrawn }, ref) => {
@@ -86,7 +89,6 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
   const multiSelectRef = useRef<Select | null>(null);
   const modifyRef = useRef<Modify | null>(null);
   const drawCutRef = useRef<Draw | null>(null);
-  const drawSelectByLocationRef = useRef<Draw | null>(null);
   const drawNewRef = useRef<Draw | null>(null);
   const tempSourceRef = useRef<VectorSource<OLFeature<Geometry>> | null>(null);
 
@@ -160,7 +162,7 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       if (activeToolRef.current !== 'select' && activeToolRef.current !== 'edit') return;
       const newSet = new Set<string>();
       e.target.getFeatures().forEach((f: OLFeature<Geometry>) => {
-        const id = f.getId() as string;
+        const id = (f.getId() as string) || (f.get('id') as string);
         if (id) newSet.add(id);
       });
       updateSelection(newSet);
@@ -178,7 +180,7 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       if (activeToolRef.current !== 'merge') return;
       const newSet = new Set<string>();
       multiSelect.getFeatures().forEach((f: OLFeature<Geometry>) => {
-        const id = f.getId() as string;
+        const id = (f.getId() as string) || (f.get('id') as string);
         if (id) newSet.add(id);
       });
       updateSelection(newSet);
@@ -197,7 +199,8 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
     });
     drawCut.on('drawend', (e) => {
       const line = e.feature;
-      tempSource.clear();
+      // OL adds the feature to source AFTER drawend fires — clear after
+      setTimeout(() => tempSource.clear(), 0);
       performCut(line as OLFeature<Geometry>);
     });
     drawCutRef.current = drawCut;
@@ -219,7 +222,6 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       multiSelectRef.current,
       modifyRef.current,
       drawCutRef.current,
-      drawSelectByLocationRef.current,
       drawNewRef.current,
     ].forEach((interaction) => {
       if (interaction) map.removeInteraction(interaction);
@@ -243,9 +245,6 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
         break;
       case 'cut':
         if (drawCutRef.current) map.addInteraction(drawCutRef.current);
-        break;
-      case 'selectByLocation':
-        setupSelectByLocationDraw(map);
         break;
       case 'drawPolygon':
         setupDrawNew(map, 'Polygon');
@@ -282,63 +281,6 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
     });
 
     drawNewRef.current = draw;
-    map.addInteraction(draw);
-  };
-
-  const setupSelectByLocationDraw = (map: Map) => {
-    const tempSource = tempSourceRef.current;
-    if (!tempSource) return;
-
-    const draw = new Draw({
-      source: tempSource,
-      type: 'Circle',
-      geometryFunction: createBox(),
-      style: selectByLocationStyle,
-    });
-
-    draw.on('drawend', (e) => {
-      const drawnFeature = e.feature;
-      tempSource.clear();
-      map.removeInteraction(draw);
-
-      const format = new GeoJSON();
-      const drawnGeoJSON = format.writeFeatureObject(drawnFeature, {
-        featureProjection: 'EPSG:3857',
-        dataProjection: 'EPSG:4326',
-      });
-
-      const newSelected = new Set<string>();
-
-      vectorSourceRef.current?.getFeatures().forEach((f) => {
-        const featureGeoJSON = format.writeFeatureObject(f, {
-          featureProjection: 'EPSG:3857',
-          dataProjection: 'EPSG:4326',
-        });
-
-        try {
-          if (turf.booleanIntersects(featureGeoJSON as GJFeature, drawnGeoJSON as GJFeature)) {
-            const id = f.getId() as string;
-            if (id) newSelected.add(id);
-          }
-        } catch {
-          // skip invalid geometries
-        }
-      });
-
-      updateSelection(newSelected);
-
-      if (newSelected.size > 0) {
-        openNotification({
-          type: 'info',
-          title: 'Seçim',
-          content: `${newSelected.size} feature seçildi`,
-        });
-      }
-
-      setupSelectByLocationDraw(map);
-    });
-
-    drawSelectByLocationRef.current = draw;
     map.addInteraction(draw);
   };
 
@@ -398,17 +340,39 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
         if (!result) continue;
 
         const [part1, part2] = result;
+
+        const parentColor = feature.get('color') || DEFAULT_COLOR;
+        const parentName = feature.get('name') ?? null;
+        const parentFeatureType = feature.get('featureType') ?? null;
+
         vectorSource.removeFeature(feature);
 
         [part1, part2].forEach((part) => {
           const newId = uuidv4();
           const rawFeature = format.readFeature(
-            { ...part, properties: { ...feature.getProperties(), id: newId } },
+            {
+              ...part,
+              properties: {
+                id: newId,
+                color: parentColor,
+                name: parentName,
+                featureType: parentFeatureType,
+              },
+            },
             { featureProjection: 'EPSG:3857', dataProjection: 'EPSG:4326' }
           );
           const newFeature = (Array.isArray(rawFeature) ? rawFeature[0] : rawFeature) as OLFeature<Geometry>;
           newFeature.setId(newId);
+          newFeature.set('color', parentColor);
+          newFeature.set('name', parentName);
+          newFeature.set('featureType', parentFeatureType);
           vectorSource.addFeature(newFeature);
+        });
+
+        openNotification({
+          type: 'success',
+          title: 'Kəsmə',
+          content: 'Polygon uğurla iki hissəyə bölündü.',
         });
 
         cutPerformed = true;
@@ -433,7 +397,7 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
   ): [GJFeature, GJFeature] | null => {
     const bb = turf.bbox(polygon);
     const diagonal = Math.sqrt(Math.pow(bb[2] - bb[0], 2) + Math.pow(bb[3] - bb[1], 2));
-    const ext = diagonal * 3;
+    const ext = Math.max(diagonal * 5, 0.01);
 
     const coords = line.geometry.coordinates;
     const start = coords[0];
@@ -450,7 +414,7 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
 
     const nx = -uy;
     const ny = ux;
-    const big = ext * 2;
+    const big = ext * 4;
 
     const leftHalf = turf.polygon([[
       extStart,
@@ -461,10 +425,16 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
     ]]);
 
     const part1 = turf.intersect(turf.featureCollection([polygon, leftHalf]));
-    if (!part1) return null;
+    if (!part1) {
+      console.error('cutPolygonWithLine: intersect returned null (leftHalf does not overlap polygon)');
+      return null;
+    }
 
     const part2 = turf.difference(turf.featureCollection([polygon, part1]));
-    if (!part2) return null;
+    if (!part2) {
+      console.error('cutPolygonWithLine: difference returned null (line does not split polygon into two parts — try crossing both edges)');
+      return null;
+    }
 
     return [part1 as GJFeature, part2 as GJFeature];
   };
@@ -479,9 +449,12 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       if (selectedIds.length < 2) return;
 
       const format = new GeoJSON();
-      const features = selectedIds
-        .map((id) => vectorSource.getFeatureById(id))
-        .filter(Boolean) as OLFeature<Geometry>[];
+      const findById = (id: string) =>
+        (vectorSource.getFeatureById(id) as OLFeature<Geometry> | null) ??
+        vectorSource.getFeatures().find((f) => f.get('id') === id) ??
+        null;
+
+      const features = selectedIds.map(findById).filter(Boolean) as OLFeature<Geometry>[];
 
       const geoJSONFeatures = features.map((f) =>
         format.writeFeatureObject(f, {
@@ -490,7 +463,7 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
         })
       );
 
-      const targetFeature = vectorSource.getFeatureById(targetFeatureId);
+      const targetFeature = findById(targetFeatureId);
 
       try {
         const firstGeomType = geoJSONFeatures[0]?.geometry?.type;
@@ -568,11 +541,12 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       if (!vectorSource) return;
 
       selectedIdsRef.current.forEach((id) => {
-        const feature = vectorSource.getFeatureById(id);
+        const feature =
+          (vectorSource.getFeatureById(id) as OLFeature<Geometry> | null) ??
+          vectorSource.getFeatures().find((f) => f.get('id') === id) ??
+          null;
         if (feature) {
           feature.set('color', color);
-          const props = feature.get('properties') || {};
-          feature.set('properties', { ...props, color });
         }
       });
 
@@ -585,16 +559,17 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
 
       const format = new GeoJSON();
       return vectorSource.getFeatures().map((f) => {
+        const id = (f.getId() as string) || (f.get('id') as string);
         const geoJSON = format.writeFeatureObject(f, {
           featureProjection: 'EPSG:3857',
           dataProjection: 'EPSG:4326',
         });
         return {
           type: 'Feature' as const,
-          id: f.getId() as string,
+          id,
           geometry: geoJSON.geometry as GeoJSONFeature['geometry'],
           properties: {
-            id: f.getId() as string,
+            id,
             name: f.get('name') ?? null,
             color: f.get('color') || DEFAULT_COLOR,
             featureType: f.get('featureType') ?? null,
@@ -635,7 +610,10 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
 
       const count = selectedIdsRef.current.size;
       selectedIdsRef.current.forEach((id) => {
-        const feature = vectorSource.getFeatureById(id);
+        const feature =
+          (vectorSource.getFeatureById(id) as OLFeature<Geometry> | null) ??
+          vectorSource.getFeatures().find((f) => f.get('id') === id) ??
+          null;
         if (feature) vectorSource.removeFeature(feature);
       });
 
@@ -656,13 +634,16 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
 
       return Array.from(selectedIdsRef.current)
         .map((id) => {
-          const f = vectorSource.getFeatureById(id);
+          const f =
+            (vectorSource.getFeatureById(id) as OLFeature<Geometry> | null) ??
+            vectorSource.getFeatures().find((feat) => feat.get('id') === id) ??
+            null;
           if (!f) return null;
           return {
-            id: f.getId() as string,
-            name: f.get('name') || null,
+            id: (f.getId() as string) || f.get('id'),
+            name: f.get('name') ?? null,
             color: f.get('color') || DEFAULT_COLOR,
-            featureType: f.get('featureType') || null,
+            featureType: f.get('featureType') ?? null,
           };
         })
         .filter(Boolean) as GisFeatureInfo[];
@@ -672,7 +653,10 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       const vectorSource = vectorSourceRef.current;
       if (!vectorSource) return;
 
-      const feature = vectorSource.getFeatureById(id);
+      const feature =
+        (vectorSource.getFeatureById(id) as OLFeature<Geometry> | null) ??
+        vectorSource.getFeatures().find((f) => f.get('id') === id) ??
+        null;
       if (!feature) return;
 
       Object.entries(props).forEach(([key, value]) => {
@@ -680,6 +664,84 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       });
 
       refreshStyles();
+    },
+
+    applySelectByLocation: (relationship: SpatialRelationship, distanceMeters: number): number => {
+      const vectorSource = vectorSourceRef.current;
+      if (!vectorSource) return 0;
+
+      const sourceIds = Array.from(selectedIdsRef.current);
+      if (sourceIds.length === 0) return 0;
+
+      const findById = (id: string) =>
+        (vectorSource.getFeatureById(id) as OLFeature<Geometry> | null) ??
+        vectorSource.getFeatures().find((f) => f.get('id') === id) ??
+        null;
+
+      const format = new GeoJSON();
+      const sourceFeatures = sourceIds.map(findById).filter(Boolean) as OLFeature<Geometry>[];
+
+      let sourceGeoJSONs: GJFeature[] = sourceFeatures.map((f) =>
+        format.writeFeatureObject(f, {
+          featureProjection: 'EPSG:3857',
+          dataProjection: 'EPSG:4326',
+        }) as GJFeature
+      );
+
+      if (distanceMeters > 0) {
+        sourceGeoJSONs = sourceGeoJSONs
+          .map((geo) => {
+            try {
+              return turf.buffer(geo as GJFeature<GJPolygon | GJMultiPolygon | GJLineString>, distanceMeters, { units: 'meters' }) as GJFeature | undefined;
+            } catch {
+              return undefined;
+            }
+          })
+          .filter(Boolean) as GJFeature[];
+      }
+
+      const test = (feat: GJFeature, src: GJFeature): boolean => {
+        try {
+          switch (relationship) {
+            case 'intersects': return turf.booleanIntersects(feat, src);
+            case 'within': return turf.booleanWithin(feat, src);
+            case 'contains': return turf.booleanContains(feat, src);
+            case 'touches': return turf.booleanTouches(feat, src);
+            case 'disjoint': return turf.booleanDisjoint(feat, src);
+            default: return false;
+          }
+        } catch {
+          return false;
+        }
+      };
+
+      const newSelection = new Set<string>();
+      vectorSource.getFeatures().forEach((f) => {
+        const id = (f.getId() as string) || (f.get('id') as string);
+        if (!id) return;
+
+        const featGeoJSON = format.writeFeatureObject(f, {
+          featureProjection: 'EPSG:3857',
+          dataProjection: 'EPSG:4326',
+        }) as GJFeature;
+
+        for (const sourceGeo of sourceGeoJSONs) {
+          if (test(featGeoJSON, sourceGeo)) {
+            newSelection.add(id);
+            break;
+          }
+        }
+      });
+
+      singleSelectRef.current?.getFeatures().clear();
+      multiSelectRef.current?.getFeatures().clear();
+      newSelection.forEach((id) => {
+        const feature = findById(id);
+        if (feature) singleSelectRef.current?.getFeatures().push(feature);
+      });
+
+      updateSelection(newSelection);
+      return newSelection.size;
     },
   }));
 

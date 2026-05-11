@@ -6,6 +6,7 @@ export interface ToolbarProps {
   isSaving: boolean;
   onToolChange: (tool: ToolType) => void;
   onMergeClick: () => void;
+  onSelectByLocationClick: () => void;
   onDeleteClick: () => void;
   onSaveClick: () => void;
   onColorChange: (color: string) => void;
