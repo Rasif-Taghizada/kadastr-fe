@@ -233,7 +233,7 @@ const hexToRgba = (hex: string, alpha: number): string => {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 };
 
-const makeFeatureStyle = (color: string, isSelected: boolean): Style => {
+const makeFeatureStyle = (color: string, isSelected: boolean, isMerged = false): Style => {
   if (isSelected) {
     return new Style({
       fill: new Fill({ color: hexToRgba(color, 0.75) }),
@@ -245,8 +245,11 @@ const makeFeatureStyle = (color: string, isSelected: boolean): Style => {
       }),
     });
   }
+  // Merged features use fully opaque fill so the gap-bridge area is solid,
+  // rather than showing OSM tiles through the semi-transparent fill.
+  const fillAlpha = isMerged ? 1.0 : 0.6;
   return new Style({
-    fill: new Fill({ color: hexToRgba(color, 0.6) }),
+    fill: new Fill({ color: hexToRgba(color, fillAlpha) }),
     stroke: new Stroke({ color, width: 2 }),
     image: new CircleStyle({
       radius: 5,
@@ -317,7 +320,8 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
         const id = feature.getId() as string | undefined;
         const isSelected = id ? selectedIdsRef.current.has(id) : false;
         const color = (feature as OLFeature<Geometry>).get('color') || DEFAULT_COLOR;
-        return makeFeatureStyle(color, isSelected);
+        const isMerged = (feature as OLFeature<Geometry>).get('isMerged') === true;
+        return makeFeatureStyle(color, isSelected, isMerged);
       },
     });
     vectorLayerRef.current = vectorLayer;
@@ -512,8 +516,11 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       });
 
       features.forEach((f) => {
-        const id = (f as OLFeature<Geometry>).get('id');
-        if (id) (f as OLFeature<Geometry>).setId(id);
+        const feat = f as OLFeature<Geometry>;
+        const id = feat.get('id');
+        if (id) feat.setId(id);
+        // Restore solid-fill flag for previously merged features
+        if (feat.get('isMerged')) feat.set('isMerged', true);
       });
 
       vectorSourceRef.current?.addFeatures(features as OLFeature<Geometry>[]);
@@ -772,16 +779,23 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
         mergedFeature.set('color', targetColor);
         mergedFeature.set('name', targetName);
         mergedFeature.set('featureType', targetFeatureType);
+        // Single-polygon result means the gap was geometrically dissolved — mark
+        // it so the style function renders a solid (opaque) fill rather than the
+        // default semi-transparent one, making the former gap area visually solid.
+        mergedFeature.set('isMerged', mergedGeoJSON.geometry?.type === 'Polygon');
         vectorSource.addFeature(mergedFeature);
 
         singleSelectRef.current?.getFeatures().clear();
         multiSelectRef.current?.getFeatures().clear();
         updateSelection(new Set());
 
+        const isSinglePolygon = mergedGeoJSON.geometry?.type === 'Polygon';
         openNotification({
           type: 'success',
           title: 'Birləşdirmə',
-          content: `${features.length} feature uğurla birləşdirildi`,
+          content: isSinglePolygon
+            ? `${features.length} poliqon vahid bir poliqona birləşdirildi`
+            : `${features.length} poliqon multipart (çoxhissəli) poliqon kimi birləşdirildi`,
         });
       } catch (err) {
         console.error('Merge error:', err);
@@ -830,6 +844,7 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
             name: f.get('name') ?? null,
             color: f.get('color') || DEFAULT_COLOR,
             featureType: f.get('featureType') ?? null,
+            isMerged: f.get('isMerged') ?? false,
           },
         };
       });
