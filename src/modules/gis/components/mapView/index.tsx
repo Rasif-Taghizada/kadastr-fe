@@ -10,6 +10,7 @@ import { fromLonLat, toLonLat } from 'ol/proj';
 import Select from 'ol/interaction/Select';
 import Modify from 'ol/interaction/Modify';
 import Draw from 'ol/interaction/Draw';
+import Snap from 'ol/interaction/Snap';
 import { click, always } from 'ol/events/condition';
 import Style from 'ol/style/Style';
 import Fill from 'ol/style/Fill';
@@ -29,6 +30,199 @@ import type { MapViewProps, MapViewRef, GisFeatureInfo, GeoJSONFeature, GeoJSONF
 // Şağan / Buzovna, Xəzər district, Baku
 const BAKU_CENTER = fromLonLat([50.1108, 40.4834]);
 const DEFAULT_COLOR = '#3388ff';
+type GeometryFamily = 'line' | 'polygon' | 'unsupported';
+type PolygonFeature = GJFeature<GJPolygon | GJMultiPolygon>;
+type LineFeature = GJFeature<GJLineString | GJMultiLineString>;
+
+const getGeometryFamily = (geometryType?: string): GeometryFamily => {
+  if (geometryType === 'LineString' || geometryType === 'MultiLineString') return 'line';
+  if (geometryType === 'Polygon' || geometryType === 'MultiPolygon') return 'polygon';
+  return 'unsupported';
+};
+
+const isPolygonFeature = (feature: GJFeature): feature is PolygonFeature =>
+  getGeometryFamily(feature.geometry?.type) === 'polygon';
+
+const isLineFeature = (feature: GJFeature): feature is LineFeature =>
+  getGeometryFamily(feature.geometry?.type) === 'line';
+
+// ─── JTS-inspired polygon union ───────────────────────────────────────────────
+// GeoServer uses JTS CascadedPolygonUnion + GeometrySnapper + PrecisionModel.
+// We replicate that pipeline in three stages:
+//   Stage 1 – PrecisionModel snap: round coords to a fixed decimal grid so
+//             polygon-clipping sees identical shared-boundary vertices.
+//   Stage 2 – GeometrySnapper: snap each polygon's vertices to the nearest
+//             vertex in the other polygons within a degree-space tolerance.
+//   Stage 3 – buffer(0) self-repair + final union fallback.
+
+const snapRingToPrecision = (ring: number[][], factor: number): number[][] =>
+  ring.map((c) => c.map((v) => Math.round(v * factor) / factor));
+
+const snapGeomToPrecision = (
+  geom: GJPolygon | GJMultiPolygon,
+  factor: number,
+): GJPolygon | GJMultiPolygon => {
+  if (geom.type === 'Polygon') {
+    return { type: 'Polygon', coordinates: geom.coordinates.map((r) => snapRingToPrecision(r, factor)) };
+  }
+  return {
+    type: 'MultiPolygon',
+    coordinates: geom.coordinates.map((poly) => poly.map((r) => snapRingToPrecision(r, factor))),
+  };
+};
+
+const collectRingsCoords = (features: PolygonFeature[]): number[][] => {
+  const pts: number[][] = [];
+  for (const f of features) {
+    const geom = f.geometry;
+    const rings: number[][][] =
+      geom.type === 'Polygon'
+        ? geom.coordinates
+        : geom.coordinates.flat(1);
+    for (const ring of rings) for (const c of ring) pts.push(c);
+  }
+  return pts;
+};
+
+// JTS GeometrySnapper equivalent: for every vertex of `target` find the closest
+// vertex in `otherCoords`; if it is within `tolDeg` degrees snap to it.
+const snapRingToVertices = (ring: number[][], otherCoords: number[][], tolDeg: number): number[][] =>
+  ring.map((c) => {
+    let best = Infinity;
+    let snap = c;
+    for (const o of otherCoords) {
+      const d = Math.sqrt((c[0] - o[0]) ** 2 + (c[1] - o[1]) ** 2);
+      if (d < best && d <= tolDeg) { best = d; snap = o; }
+    }
+    return snap;
+  });
+
+const snapGeomToVertices = (
+  geom: GJPolygon | GJMultiPolygon,
+  otherCoords: number[][],
+  tolDeg: number,
+): GJPolygon | GJMultiPolygon => {
+  if (geom.type === 'Polygon') {
+    return {
+      type: 'Polygon',
+      coordinates: geom.coordinates.map((r) => snapRingToVertices(r, otherCoords, tolDeg)),
+    };
+  }
+  return {
+    type: 'MultiPolygon',
+    coordinates: geom.coordinates.map((poly) =>
+      poly.map((r) => snapRingToVertices(r, otherCoords, tolDeg)),
+    ),
+  };
+};
+
+const tryUnion = (features: PolygonFeature[]): PolygonFeature | null => {
+  try {
+    return turf.union(turf.featureCollection(features)) as PolygonFeature | null;
+  } catch {
+    return null;
+  }
+};
+
+// Degree-space tolerance levels that mirror JTS PrecisionModel scale factors.
+// 1e-7 deg ≈ 1.1 cm; 1e-6 deg ≈ 11 cm; 1e-5 deg ≈ 1.1 m.
+const PRECISION_SCALES = [1e7, 1e6, 1e5];
+// GeometrySnapper tolerance levels (degrees)
+const SNAP_TOLERANCES_DEG = [1e-7, 1e-6, 1e-5];
+
+// ─── Stage 4: cascade gap-bridge ──────────────────────────────────────────────
+// Strategy: try progressively larger buffer radii R until the buffered polygons
+// overlap and union into a single Polygon, then deflate by the same R to
+// restore the original outer boundary while keeping the gap filled.
+//
+// Why cascade instead of measuring the gap first:
+//   – vertex-to-vertex distance overestimates the true gap when the nearest
+//     boundary points lie on polygon edges rather than at vertices.
+//   – Starting small avoids excessive shape distortion; the first R that
+//     bridges the gap is used.
+//
+// 1-D proof that buffer(R) → union → buffer(-R) fills the gap:
+//   A:[0,10]  B:[15,25]  gap=5m  R=3m (> gap/2=2.5m)
+//   A':[-3,13]  B':[12,28]  overlap 1m → union:[-3,28]
+//   buffer(-3) → [0,25]  ← outer edges match originals, gap 10..15 is filled ✓
+
+const bridgeGapAndUnion = (polyFeatures: PolygonFeature[]): PolygonFeature | null => {
+  // Candidate radii in metres.  The first one that produces a single Polygon
+  // union is used; we stop at 500 m to avoid merging genuinely distant parcels.
+  const candidates = [0.5, 1, 2, 3, 5, 7, 10, 15, 20, 30, 50, 75, 100, 150, 200, 300, 500];
+
+  for (const bufAmt of candidates) {
+    try {
+      const buffered = polyFeatures
+        .map((f) => turf.buffer(f, bufAmt, { units: 'meters' }))
+        .filter((f): f is PolygonFeature => Boolean(f) && isPolygonFeature(f as GJFeature));
+
+      if (buffered.length < 2) continue;
+
+      const merged = tryUnion(buffered);
+      if (merged?.geometry.type !== 'Polygon') continue;
+
+      // Deflate by the same radius.  The former gap area is "deep enough" to
+      // survive because both originals contributed their radius into it
+      // (net width through gap = 2R − gap > 0 when R > gap/2).
+      const restored = turf.buffer(merged, -bufAmt, { units: 'meters' });
+      if (restored && isPolygonFeature(restored as GJFeature)) return restored as PolygonFeature;
+
+      // Deflation failed (very thin polygon) – return the expanded version so
+      // the merge still produces a single feature rather than MultiPolygon.
+      return merged;
+    } catch (err) {
+      console.error(`Stage 4 bridge R=${bufAmt}m failed:`, err);
+    }
+  }
+
+  return null;
+};
+
+const unionPolygonFeatures = (polyFeatures: PolygonFeature[]): PolygonFeature | null => {
+  // Stage 1 – exact union (no snapping)
+  const exact = tryUnion(polyFeatures);
+  if (exact?.geometry.type === 'Polygon') return exact;
+
+  // Stage 2a – PrecisionModel: snap every coord to grid, coarser with each try
+  for (const scale of PRECISION_SCALES) {
+    const snapped = polyFeatures.map((f) => ({
+      ...f,
+      geometry: snapGeomToPrecision(f.geometry, scale),
+    })) as PolygonFeature[];
+    const result = tryUnion(snapped);
+    if (result?.geometry.type === 'Polygon') return result;
+  }
+
+  // Stage 2b – GeometrySnapper: snap each polygon's vertices onto the other polygons' vertices
+  for (const tolDeg of SNAP_TOLERANCES_DEG) {
+    const snapped = polyFeatures.map((f, idx) => {
+      const others = polyFeatures.filter((_, i) => i !== idx);
+      const otherCoords = collectRingsCoords(others);
+      return { ...f, geometry: snapGeomToVertices(f.geometry, otherCoords, tolDeg) } as PolygonFeature;
+    });
+    const result = tryUnion(snapped);
+    if (result?.geometry.type === 'Polygon') return result;
+  }
+
+  // Stage 3 – buffer(0) self-repair then union (JTS validity normalisation)
+  const repaired = polyFeatures
+    .map((f) => turf.buffer(f, 0))
+    .filter((f): f is PolygonFeature => Boolean(f) && isPolygonFeature(f as GJFeature));
+  if (repaired.length >= 2) {
+    const result = tryUnion(repaired);
+    if (result?.geometry.type === 'Polygon') return result;
+  }
+
+  // Stage 4 – real-gap bridge: measure the gap and close it with buffer+union+deflate.
+  // Handles cases where polygons are genuinely separated (road, corridor, etc.).
+  const bridged = bridgeGapAndUnion(polyFeatures);
+  if (bridged?.geometry.type === 'Polygon') return bridged;
+
+  // All stages exhausted — polygons are too far apart or non-polygon input.
+  // Return MultiPolygon so the merge still succeeds as a multipart feature.
+  return exact;
+};
 
 const hexToRgba = (hex: string, alpha: number): string => {
   const m = hex.replace('#', '');
@@ -92,6 +286,7 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
   const singleSelectRef = useRef<Select | null>(null);
   const multiSelectRef = useRef<Select | null>(null);
   const modifyRef = useRef<Modify | null>(null);
+  const snapRef = useRef<Snap | null>(null);
   const drawCutRef = useRef<Draw | null>(null);
   const drawNewRef = useRef<Draw | null>(null);
   const tempSourceRef = useRef<VectorSource<OLFeature<Geometry>> | null>(null);
@@ -195,6 +390,11 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
     const modify = new Modify({ source: vectorSource });
     modifyRef.current = modify;
 
+    // ─── Snap (so adjacent polygons can share exact borders) ──────────────────
+    // Must be added to the map AFTER any Draw/Modify interaction to take effect.
+    const snap = new Snap({ source: vectorSource });
+    snapRef.current = snap;
+
     // ─── Draw cut line ────────────────────────────────────────────────────────
     const drawCut = new Draw({
       source: tempSource,
@@ -225,6 +425,7 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       singleSelectRef.current,
       multiSelectRef.current,
       modifyRef.current,
+      snapRef.current,
       drawCutRef.current,
       drawNewRef.current,
     ].forEach((interaction) => {
@@ -236,6 +437,11 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
     multiSelectRef.current?.getFeatures().clear();
     updateSelection(new Set());
 
+    // Snap has to be (re)added LAST, after Draw/Modify, so it can intercept their pointer events.
+    const enableSnap = () => {
+      if (snapRef.current) map.addInteraction(snapRef.current);
+    };
+
     switch (activeTool) {
       case 'select':
         if (singleSelectRef.current) map.addInteraction(singleSelectRef.current);
@@ -246,18 +452,23 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       case 'edit':
         if (singleSelectRef.current) map.addInteraction(singleSelectRef.current);
         if (modifyRef.current) map.addInteraction(modifyRef.current);
+        enableSnap();
         break;
       case 'cut':
         if (drawCutRef.current) map.addInteraction(drawCutRef.current);
+        enableSnap();
         break;
       case 'drawPolygon':
         setupDrawNew(map, 'Polygon');
+        enableSnap();
         break;
       case 'drawLine':
         setupDrawNew(map, 'LineString');
+        enableSnap();
         break;
       case 'drawPoint':
         setupDrawNew(map, 'Point');
+        enableSnap();
         break;
     }
   }, [activeTool]);
@@ -452,8 +663,6 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       if (!vectorSource) return;
 
       const selectedIds = Array.from(selectedIdsRef.current);
-      if (selectedIds.length < 2) return;
-
       const format = new GeoJSON();
       const findById = (id: string) =>
         (vectorSource.getFeatureById(id) as OLFeature<Geometry> | null) ??
@@ -461,6 +670,15 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
         null;
 
       const features = selectedIds.map(findById).filter(Boolean) as OLFeature<Geometry>[];
+
+      if (features.length < 2) {
+        openNotification({
+          type: 'warning',
+          title: 'Birləşdirmə',
+          content: 'Birləşdirmək üçün ən azı iki obyekt seçilməlidir',
+        });
+        return;
+      }
 
       const geoJSONFeatures = features.map((f) =>
         format.writeFeatureObject(f, {
@@ -472,13 +690,23 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
       const targetFeature = findById(targetFeatureId);
 
       try {
-        const firstGeomType = geoJSONFeatures[0]?.geometry?.type;
-        const isLineGeometry = firstGeomType === 'LineString' || firstGeomType === 'MultiLineString';
+        const geometryFamilies = new Set(geoJSONFeatures.map((f) => getGeometryFamily(f.geometry?.type)));
+
+        if (geometryFamilies.size !== 1 || geometryFamilies.has('unsupported')) {
+          openNotification({
+            type: 'warning',
+            title: 'Birləşdirmə',
+            content: 'Birləşdirmək üçün yalnız eyni tipli xətt və ya poliqon obyektləri seçilməlidir',
+          });
+          return;
+        }
+
+        const geometryFamily = Array.from(geometryFamilies)[0];
 
         let mergedGeoJSON: GJFeature;
 
-        if (isLineGeometry) {
-          const lineFeatures = geoJSONFeatures as GJFeature<GJLineString | GJMultiLineString>[];
+        if (geometryFamily === 'line') {
+          const lineFeatures = geoJSONFeatures.filter(isLineFeature);
           const collection = turf.featureCollection(lineFeatures);
           const combined = turf.combine(collection);
           const multiLine = combined.features[0] as GJFeature<GJMultiLineString>;
@@ -499,13 +727,24 @@ const MapView = forwardRef<MapViewRef, MapViewProps>(({ activeTool, onSelectionC
             ? (turf.lineString(joined[0]) as GJFeature<GJLineString>)
             : (turf.multiLineString(joined) as GJFeature<GJMultiLineString>);
         } else {
-          let merged = geoJSONFeatures[0] as unknown as GJFeature<GJPolygon | GJMultiPolygon>;
-          for (let i = 1; i < geoJSONFeatures.length; i++) {
-            const next = geoJSONFeatures[i] as unknown as GJFeature<GJPolygon | GJMultiPolygon>;
-            const result = turf.union(turf.featureCollection([merged, next]));
-            if (result) merged = result as GJFeature<GJPolygon | GJMultiPolygon>;
+          const polyFeatures = geoJSONFeatures.filter(isPolygonFeature);
+
+          if (polyFeatures.length < 2) {
+            openNotification({
+              type: 'warning',
+              title: 'Birləşdirmə',
+              content: 'Birləşdirmək üçün ən azı iki poliqon seçilməlidir',
+            });
+            return;
           }
-          mergedGeoJSON = merged;
+
+          const unioned = unionPolygonFeatures(polyFeatures);
+
+          if (!unioned) {
+            throw new Error('Polygon union failed');
+          }
+
+          mergedGeoJSON = unioned;
         }
 
         const targetColor = targetFeature?.get('color') || DEFAULT_COLOR;
